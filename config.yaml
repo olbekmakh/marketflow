@@ -1,0 +1,30 @@
+
+// config.yaml
+server:
+  port: 8080
+
+database:
+  host: localhost
+  port: 5432
+  user: marketflow
+  password: password
+  dbname: marketflow
+  sslmode: disable
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  db: 0
+  ttl: 300s
+
+exchanges:
+  - name: "exchange1"
+    host: "127.0.0.1"
+    port: 40101
+  - name: "exchange2"
+    host: "127.0.0.1"
+    port: 40102
+  - name: "exchange3"
+    host: "127.0.0.1"
+    port: 40103
