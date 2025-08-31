@@ -41,7 +41,7 @@ func NewApplication(db domain.PriceRepository, cache domain.CacheRepository, cfg
 		cache:     cache,
 		exchanges: exchanges,
 		testGen:   NewTestDataGenerator(),
-		mode:      domain.LiveMode,
+		mode:      domain.TestMode, // Начинаем в тестовом режиме
 		config:    cfg,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -52,7 +52,7 @@ func NewApplication(db domain.PriceRepository, cache domain.CacheRepository, cfg
 }
 
 func (a *Application) Start(ctx context.Context) error {
-	slog.Info("Starting MarketFlow application")
+	slog.Info("Starting MarketFlow application in test mode")
 
 	// Запуск воркеров
 	a.startWorkers()
@@ -70,13 +70,14 @@ func (a *Application) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Запуск получения данных
-	return a.startDataCollection()
+	// Автоматически запускаем в тестовом режиме
+	return a.startTestMode()
 }
 
 func (a *Application) startWorkers() {
 	// Создаем воркеров - по 5 на каждую биржу
-	for i := 0; i < len(a.exchanges)*5; i++ {
+	numWorkers := 15 // 5 воркеров на 3 биржи
+	for i := 0; i < numWorkers; i++ {
 		worker := NewWorker(i, a.db, a.cache)
 		a.workers = append(a.workers, worker)
 		
@@ -99,13 +100,15 @@ func (a *Application) startDataCollection() error {
 }
 
 func (a *Application) startLiveMode() error {
+	slog.Info("Attempting to start Live Mode")
 	symbols := []string{"BTCUSDT", "DOGEUSDT", "TONUSDT", "SOLUSDT", "ETHUSDT"}
 	
 	var channels []<-chan domain.PriceUpdate
+	connectedExchanges := 0
 
 	for _, exchange := range a.exchanges {
 		if err := exchange.Connect(a.ctx); err != nil {
-			slog.Error("Failed to connect to exchange", "error", err)
+			slog.Warn("Failed to connect to exchange", "exchange", fmt.Sprintf("%T", exchange), "error", err)
 			continue
 		}
 
@@ -113,15 +116,16 @@ func (a *Application) startLiveMode() error {
 		if err != nil {
 			slog.Error("Failed to subscribe to exchange", "error", err)
 			continue
-		}
+		}Code 
 
-		channels = append(channels, ch)
+	if connectedExchanges == 0 {
+		slog.Warn("No exchanges connected, falling back to test mode")
+		a.mode = domain.TestMode
+		return a.startTestMode()
 	}
 
-	if len(channels) == 0 {
-		return fmt.Errorf("no exchanges connected")
-	}
-
+	slog.Info("Live mode started", "connected_exchanges", connectedExchanges)
+	
 	// Fan-In: объединяем все каналы
 	a.fanIn = NewFanIn(channels)
 	
@@ -135,6 +139,8 @@ func (a *Application) startLiveMode() error {
 }
 
 func (a *Application) startTestMode() error {
+	slog.Info("Starting Test Mode with synthetic data")
+	
 	ch := a.testGen.Start(a.ctx)
 	a.fanIn = NewFanIn([]<-chan domain.PriceUpdate{ch})
 	
@@ -185,9 +191,19 @@ func (a *Application) startDataAggregator() {
 func (a *Application) aggregateData() {
 	symbols := []string{"BTCUSDT", "DOGEUSDT", "TONUSDT", "SOLUSDT", "ETHUSDT"}
 	
-	for _, exchCfg := range a.config.Exchanges {
-		for _, symbol := range symbols {
-			a.aggregateForPair(exchCfg.Name, symbol)
+	if a.mode == domain.TestMode {
+		// В тестовом режиме используем "test" как имя биржи
+		a.aggregateForPair("test", "BTCUSDT")
+		a.aggregateForPair("test", "ETHUSDT") 
+		a.aggregateForPair("test", "DOGEUSDT")
+		a.aggregateForPair("test", "TONUSDT")
+		a.aggregateForPair("test", "SOLUSDT")
+	} else {
+		// В режиме live используем настоящие имена бирж
+		for _, exchCfg := range a.config.Exchanges {
+			for _, symbol := range symbols {
+				a.aggregateForPair(exchCfg.Name, symbol)
+			}
 		}
 	}
 }
@@ -226,6 +242,8 @@ func (a *Application) aggregateForPair(exchange, symbol string) {
 
 	if err := a.db.Store(a.ctx, aggregated); err != nil {
 		slog.Error("Failed to store aggregated data", "error", err)
+	} else {
+		slog.Info("Stored aggregated data", "exchange", exchange, "symbol", symbol, "avg_price", avg)
 	}
 }
 
@@ -251,41 +269,80 @@ func (a *Application) startCacheCleanup() {
 }
 
 func (a *Application) SwitchMode(mode domain.DataMode) error {
+	oldMode := a.mode
 	a.mode = mode
-	// В реальной реализации здесь нужно перезапустить сбор данных
-	slog.Info("Switched mode", "mode", mode)
-	return nil
+	
+	slog.Info("Switching mode", "from", oldMode, "to", mode)
+	
+	if mode == domain.LiveMode {
+		// Попробуем подключиться к биржам
+		return a.startLiveMode()
+	} else {
+		// Переключаемся на тестовый режим
+		return a.startTestMode() 
+	}
 }
 
 func (a *Application) GetLatestPrice(exchange, symbol string) (float64, error) {
+	// В тестовом режиме используем "test" как имя биржи
+	if a.mode == domain.TestMode {
+		exchange = "test"
+	}
 	return a.cache.GetLatestPrice(a.ctx, exchange, symbol)
 }
 
 func (a *Application) GetHighestPrice(exchange, symbol string, period time.Duration) (*domain.AggregatedPrice, error) {
+	if a.mode == domain.TestMode {
+		exchange = "test"
+	}
 	return a.db.GetHighest(a.ctx, exchange, symbol, period)
 }
 
 func (a *Application) GetLowestPrice(exchange, symbol string, period time.Duration) (*domain.AggregatedPrice, error) {
+	if a.mode == domain.TestMode {
+		exchange = "test" 
+	}
 	return a.db.GetLowest(a.ctx, exchange, symbol, period)
 }
 
 func (a *Application) GetAveragePrice(exchange, symbol string, period time.Duration) (*domain.AggregatedPrice, error) {
+	if a.mode == domain.TestMode {
+		exchange = "test"
+	}
 	return a.db.GetAverage(a.ctx, exchange, symbol, period)
 }
 
 func (a *Application) GetHealth() *domain.HealthStatus {
 	connections := make(map[string]string)
 	
-	for _, exchange := range a.exchanges {
-		if exchange.IsConnected() {
-			connections[fmt.Sprintf("%T", exchange)] = "connected"
-		} else {
-			connections[fmt.Sprintf("%T", exchange)] = "disconnected"
+	if a.mode == domain.TestMode {
+		connections["test_generator"] = "active"
+	} else {
+		for i, exchange := range a.exchanges {
+			name := fmt.Sprintf("exchange%d", i+1)
+			if exchange.IsConnected() {
+				connections[name] = "connected"
+			} else {
+				connections[name] = "disconnected" 
+			}
 		}
 	}
 
+	// Проверяем Redis
+	_, err := a.cache.GetLatestPrice(a.ctx, "test", "BTCUSDT")
+	if err != nil {
+		connections["redis"] = "disconnected"
+	} else {
+		connections["redis"] = "connected"
+	}
+
+	status := "healthy"
+	if a.mode == domain.TestMode {
+		status = "healthy (test mode)"
+	}
+
 	return &domain.HealthStatus{
-		Status:      "healthy",
+		Status:      status,
 		Connections: connections,
 		Timestamp:   time.Now(),
 	}

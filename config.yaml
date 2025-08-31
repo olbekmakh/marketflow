@@ -1,5 +1,3 @@
-
-// config.yaml
 server:
   port: 8080
 
@@ -19,12 +17,12 @@ redis:
   ttl: 300s
 
 exchanges:
-  - name: "exchange1"
+  - name: "test-exchange1"
     host: "127.0.0.1"
     port: 40101
-  - name: "exchange2"
+  - name: "test-exchange2" 
     host: "127.0.0.1"
     port: 40102
-  - name: "exchange3"
-    host: "127.0.0.1"
+  - name: "test-exchange3"
+    host: "127.0.0.1" 
     port: 40103
