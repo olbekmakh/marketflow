@@ -21,10 +21,12 @@ type Application struct {
 	config      *config.Config
 	workers     []*Worker
 	fanIn       *FanIn
+	batcher     *Batcher
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 	httpServer  *HTTPServer
+	mu          sync.RWMutex
 }
 
 func NewApplication(db domain.PriceRepository, cache domain.CacheRepository, cfg *config.Config) *Application {
@@ -41,10 +43,11 @@ func NewApplication(db domain.PriceRepository, cache domain.CacheRepository, cfg
 		cache:     cache,
 		exchanges: exchanges,
 		testGen:   NewTestDataGenerator(),
-		mode:      domain.TestMode, // Начинаем в тестовом режиме
+		mode:      domain.TestMode,
 		config:    cfg,
 		ctx:       ctx,
 		cancel:    cancel,
+		batcher:   NewBatcher(db),
 	}
 
 	app.httpServer = NewHTTPServer(cfg.Server.Port, app)
@@ -52,9 +55,15 @@ func NewApplication(db domain.PriceRepository, cache domain.CacheRepository, cfg
 }
 
 func (a *Application) Start(ctx context.Context) error {
-	slog.Info("Starting MarketFlow application in test mode")
+	slog.Info("Starting MarketFlow application", 
+		"mode", a.mode,
+		"workers_per_exchange", 5,
+		"total_exchanges", len(a.config.Exchanges))
 
-	// Запуск воркеров
+	// Запуск батчера
+	a.startBatcher()
+
+	// Запуск воркеров - 5 на каждую биржу
 	a.startWorkers()
 
 	// Запуск агрегатора данных
@@ -65,20 +74,29 @@ func (a *Application) Start(ctx context.Context) error {
 
 	// Запуск HTTP сервера
 	go func() {
+		slog.Info("Starting HTTP server", "addr", fmt.Sprintf(":%d", a.config.Server.Port))
 		if err := a.httpServer.Start(); err != nil {
 			slog.Error("HTTP server error", "error", err)
 		}
 	}()
 
-	// Автоматически запускаем в тестовом режиме
+	// Запуск в тестовом режиме по умолчанию
 	return a.startTestMode()
 }
 
+func (a *Application) startBatcher() {
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.batcher.Start(a.ctx)
+	}()
+}
+
 func (a *Application) startWorkers() {
-	// Создаем воркеров - по 5 на каждую биржу
-	numWorkers := 15 // 5 воркеров на 3 биржи
+	// 5 воркеров на каждую биржу
+	numWorkers := len(a.config.Exchanges) * 5
 	for i := 0; i < numWorkers; i++ {
-		worker := NewWorker(i, a.db, a.cache)
+		worker := NewWorker(i, a.cache, a.batcher)
 		a.workers = append(a.workers, worker)
 		
 		a.wg.Add(1)
@@ -88,15 +106,9 @@ func (a *Application) startWorkers() {
 		}(worker)
 	}
 
-	slog.Info("Started workers", "count", len(a.workers))
-}
-
-func (a *Application) startDataCollection() error {
-	if a.mode == domain.LiveMode {
-		return a.startLiveMode()
-	} else {
-		return a.startTestMode()
-	}
+	slog.Info("Started worker pool", 
+		"total_workers", len(a.workers),
+		"workers_per_exchange", 5)
 }
 
 func (a *Application) startLiveMode() error {
@@ -107,24 +119,42 @@ func (a *Application) startLiveMode() error {
 	connectedExchanges := 0
 
 	for _, exchange := range a.exchanges {
-		if err := exchange.Connect(a.ctx); err != nil {
-			slog.Warn("Failed to connect to exchange", "exchange", fmt.Sprintf("%T", exchange), "error", err)
-			continue
-		}
+		maxRetries := 3
+		for retry := 0; retry < maxRetries; retry++ {
+			if err := exchange.Connect(a.ctx); err != nil {
+				slog.Warn("Failed to connect to exchange", 
+					"exchange", fmt.Sprintf("%T", exchange), 
+					"error", err,
+					"retry", retry+1,
+					"max_retries", maxRetries)
+				if retry == maxRetries-1 {
+					break
+				}
+				time.Sleep(time.Duration(retry+1) * time.Second)
+				continue
+			}
 
-		ch, err := exchange.Subscribe(symbols)
-		if err != nil {
-			slog.Error("Failed to subscribe to exchange", "error", err)
-			continue
-		}Code 
+			ch, err := exchange.Subscribe(symbols)
+			if err != nil {
+				slog.Error("Failed to subscribe to exchange", "error", err)
+				break
+			}
+
+			channels = append(channels, ch)
+			connectedExchanges++
+			break
+		}
+	}
 
 	if connectedExchanges == 0 {
 		slog.Warn("No exchanges connected, falling back to test mode")
+		a.mu.Lock()
 		a.mode = domain.TestMode
+		a.mu.Unlock()
 		return a.startTestMode()
 	}
 
-	slog.Info("Live mode started", "connected_exchanges", connectedExchanges)
+	slog.Info("Live mode started successfully", "connected_exchanges", connectedExchanges)
 	
 	// Fan-In: объединяем все каналы
 	a.fanIn = NewFanIn(channels)
@@ -139,7 +169,7 @@ func (a *Application) startLiveMode() error {
 }
 
 func (a *Application) startTestMode() error {
-	slog.Info("Starting Test Mode with synthetic data")
+	slog.Info("Starting Test Mode with synthetic data generator")
 	
 	ch := a.testGen.Start(a.ctx)
 	a.fanIn = NewFanIn([]<-chan domain.PriceUpdate{ch})
@@ -155,15 +185,24 @@ func (a *Application) startTestMode() error {
 
 func (a *Application) distributeUpdates() {
 	workerIdx := 0
+	processedCount := 0
 	
 	for update := range a.fanIn.Output() {
-		// Fan-Out: распределяем между воркерами
+		// Fan-Out: распределяем между воркерами round-robin
 		worker := a.workers[workerIdx%len(a.workers)]
 		
 		select {
 		case worker.Input() <- update:
 			workerIdx++
+			processedCount++
+			
+			if processedCount%1000 == 0 {
+				slog.Info("Processed price updates", 
+					"count", processedCount,
+					"current_worker", workerIdx%len(a.workers))
+			}
 		case <-a.ctx.Done():
+			slog.Info("Stopping update distribution", "total_processed", processedCount)
 			return
 		}
 	}
@@ -177,11 +216,21 @@ func (a *Application) startDataAggregator() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 
+		slog.Info("Started data aggregator", "interval", "1m")
+
 		for {
 			select {
 			case <-ticker.C:
+				start := time.Now()
 				a.aggregateData()
+				duration := time.Since(start)
+				
+				slog.Info("Data aggregation completed", 
+					"duration", duration,
+					"timestamp", time.Now().Format(time.RFC3339))
+				
 			case <-a.ctx.Done():
+				slog.Info("Stopping data aggregator")
 				return
 			}
 		}
@@ -191,13 +240,15 @@ func (a *Application) startDataAggregator() {
 func (a *Application) aggregateData() {
 	symbols := []string{"BTCUSDT", "DOGEUSDT", "TONUSDT", "SOLUSDT", "ETHUSDT"}
 	
-	if a.mode == domain.TestMode {
+	a.mu.RLock()
+	mode := a.mode
+	a.mu.RUnlock()
+
+	if mode == domain.TestMode {
 		// В тестовом режиме используем "test" как имя биржи
-		a.aggregateForPair("test", "BTCUSDT")
-		a.aggregateForPair("test", "ETHUSDT") 
-		a.aggregateForPair("test", "DOGEUSDT")
-		a.aggregateForPair("test", "TONUSDT")
-		a.aggregateForPair("test", "SOLUSDT")
+		for _, symbol := range symbols {
+			a.aggregateForPair("test", symbol)
+		}
 	} else {
 		// В режиме live используем настоящие имена бирж
 		for _, exchCfg := range a.config.Exchanges {
@@ -211,7 +262,15 @@ func (a *Application) aggregateData() {
 func (a *Application) aggregateForPair(exchange, symbol string) {
 	since := time.Now().Add(-1 * time.Minute)
 	prices, err := a.cache.GetRecentPrices(a.ctx, exchange, symbol, since)
-	if err != nil || len(prices) == 0 {
+	if err != nil {
+		slog.Debug("No recent prices found for aggregation", 
+			"exchange", exchange, 
+			"symbol", symbol, 
+			"error", err)
+		return
+	}
+
+	if len(prices) == 0 {
 		return
 	}
 
@@ -240,11 +299,16 @@ func (a *Application) aggregateForPair(exchange, symbol string) {
 		MaxPrice:     max,
 	}
 
-	if err := a.db.Store(a.ctx, aggregated); err != nil {
-		slog.Error("Failed to store aggregated data", "error", err)
-	} else {
-		slog.Info("Stored aggregated data", "exchange", exchange, "symbol", symbol, "avg_price", avg)
-	}
+	// Добавляем в батчер вместо прямой записи
+	a.batcher.Add(aggregated)
+
+	slog.Debug("Aggregated price data", 
+		"exchange", exchange, 
+		"symbol", symbol, 
+		"avg_price", avg,
+		"min_price", min,
+		"max_price", max,
+		"data_points", len(prices))
 }
 
 func (a *Application) startCacheCleanup() {
@@ -255,13 +319,18 @@ func (a *Application) startCacheCleanup() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
+		slog.Info("Started cache cleanup service", "interval", "30s")
+
 		for {
 			select {
 			case <-ticker.C:
 				if err := a.cache.CleanExpiredData(a.ctx); err != nil {
-					slog.Error("Failed to clean cache", "error", err)
+					slog.Error("Failed to clean expired cache data", "error", err)
+				} else {
+					slog.Debug("Cache cleanup completed")
 				}
 			case <-a.ctx.Done():
+				slog.Info("Stopping cache cleanup service")
 				return
 			}
 		}
@@ -269,44 +338,101 @@ func (a *Application) startCacheCleanup() {
 }
 
 func (a *Application) SwitchMode(mode domain.DataMode) error {
+	a.mu.Lock()
 	oldMode := a.mode
 	a.mode = mode
+	a.mu.Unlock()
 	
-	slog.Info("Switching mode", "from", oldMode, "to", mode)
+	slog.Info("Switching data mode", 
+		"from", oldMode, 
+		"to", mode,
+		"timestamp", time.Now().Format(time.RFC3339))
 	
+	// Останавливаем текущие источники данных
+	if a.fanIn != nil {
+		// Отключаем текущие подключения
+		for _, exchange := range a.exchanges {
+			if exchange.IsConnected() {
+				exchange.Disconnect()
+			}
+		}
+	}
+	
+	// Запускаем новый режим
 	if mode == domain.LiveMode {
-		// Попробуем подключиться к биржам
 		return a.startLiveMode()
 	} else {
-		// Переключаемся на тестовый режим
-		return a.startTestMode() 
+		return a.startTestMode()
 	}
 }
 
 func (a *Application) GetLatestPrice(exchange, symbol string) (float64, error) {
+	a.mu.RLock()
+	mode := a.mode
+	a.mu.RUnlock()
+
 	// В тестовом режиме используем "test" как имя биржи
-	if a.mode == domain.TestMode {
+	if mode == domain.TestMode {
 		exchange = "test"
 	}
-	return a.cache.GetLatestPrice(a.ctx, exchange, symbol)
+	
+	price, err := a.cache.GetLatestPrice(a.ctx, exchange, symbol)
+	if err != nil {
+		slog.Debug("Failed to get latest price from cache", 
+			"exchange", exchange, 
+			"symbol", symbol, 
+			"error", err)
+		
+		// Fallback: пробуем получить из PostgreSQL если Redis недоступен
+		if fallbackPrice, fallbackErr := a.getFallbackPrice(exchange, symbol); fallbackErr == nil {
+			slog.Info("Used PostgreSQL fallback for latest price", 
+				"exchange", exchange, 
+				"symbol", symbol)
+			return fallbackPrice, nil
+		}
+	}
+	
+	return price, err
 }
 
+func (a *Application) getFallbackPrice(exchange, symbol string) (float64, error) {
+	// Получаем последнюю агрегированную цену из PostgreSQL
+	recent, err := a.db.GetAverage(a.ctx, exchange, symbol, 5*time.Minute)
+	if err != nil {
+		return 0, err
+	}
+	return recent.AveragePrice, nil
+}
+
+// Остальные методы остаются такими же...
 func (a *Application) GetHighestPrice(exchange, symbol string, period time.Duration) (*domain.AggregatedPrice, error) {
-	if a.mode == domain.TestMode {
+	a.mu.RLock()
+	mode := a.mode
+	a.mu.RUnlock()
+
+	if mode == domain.TestMode {
 		exchange = "test"
 	}
 	return a.db.GetHighest(a.ctx, exchange, symbol, period)
 }
 
 func (a *Application) GetLowestPrice(exchange, symbol string, period time.Duration) (*domain.AggregatedPrice, error) {
-	if a.mode == domain.TestMode {
-		exchange = "test" 
+	a.mu.RLock()
+	mode := a.mode
+	a.mu.RUnlock()
+
+	if mode == domain.TestMode {
+		exchange = "test"
 	}
 	return a.db.GetLowest(a.ctx, exchange, symbol, period)
 }
 
 func (a *Application) GetAveragePrice(exchange, symbol string, period time.Duration) (*domain.AggregatedPrice, error) {
-	if a.mode == domain.TestMode {
+	a.mu.RLock()
+	mode := a.mode
+	a.mu.RUnlock()
+
+	if mode == domain.TestMode {
 		exchange = "test"
 	}
 	return a.db.GetAverage(a.ctx, exchange, symbol, period)
@@ -315,30 +441,54 @@ func (a *Application) GetAveragePrice(exchange, symbol string, period time.Durat
 func (a *Application) GetHealth() *domain.HealthStatus {
 	connections := make(map[string]string)
 	
-	if a.mode == domain.TestMode {
+	a.mu.RLock()
+	mode := a.mode
+	a.mu.RUnlock()
+
+	if mode == domain.TestMode {
 		connections["test_generator"] = "active"
 	} else {
 		for i, exchange := range a.exchanges {
-			name := fmt.Sprintf("exchange%d", i+1)
+			name := a.config.Exchanges[i].Name
 			if exchange.IsConnected() {
 				connections[name] = "connected"
 			} else {
-				connections[name] = "disconnected" 
+				connections[name] = "disconnected"
 			}
 		}
 	}
 
 	// Проверяем Redis
-	_, err := a.cache.GetLatestPrice(a.ctx, "test", "BTCUSDT")
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	if err := a.cache.SetLatestPrice(ctx, "health", "check", 1.0); err != nil {
 		connections["redis"] = "disconnected"
 	} else {
 		connections["redis"] = "connected"
 	}
 
+	// Проверяем PostgreSQL
+	if err := a.db.Store(ctx, &domain.AggregatedPrice{
+		PairName: "HEALTH", Exchange: "check", Timestamp: time.Now(),
+		AveragePrice: 1.0, MinPrice: 1.0, MaxPrice: 1.0,
+	}); err != nil {
+		connections["postgresql"] = "disconnected"
+	} else {
+		connections["postgresql"] = "connected"
+	}
+
 	status := "healthy"
-	if a.mode == domain.TestMode {
+	if mode == domain.TestMode {
 		status = "healthy (test mode)"
+	}
+
+	// Проверяем, есть ли отключенные сервисы
+	for _, conn := range connections {
+		if conn == "disconnected" {
+			status = "degraded"
+			break
+		}
 	}
 
 	return &domain.HealthStatus{
@@ -348,20 +498,29 @@ func (a *Application) GetHealth() *domain.HealthStatus {
 	}
 }
 
-func (a *Application) Shutdown(ctx context.Context) {
-	slog.Info("Shutting down application")
+func (a *Application) Shutdown(ctx context.Context) error {
+	slog.Info("Initiating graceful shutdown")
 	
+	// Отменяем контекст приложения
 	a.cancel()
 	
-	// Отключение от бирж
-	for _, exchange := range a.exchanges {
-		exchange.Disconnect()
+	// Останавливаем HTTP сервер
+	if err := a.httpServer.Shutdown(ctx); err != nil {
+		slog.Error("Error shutting down HTTP server", "error", err)
 	}
 	
-	// Остановка HTTP сервера
-	a.httpServer.Shutdown(ctx)
+	// Отключение от бирж
+	for i, exchange := range a.exchanges {
+		if exchange.IsConnected() {
+			if err := exchange.Disconnect(); err != nil {
+				slog.Error("Error disconnecting from exchange", 
+					"exchange", a.config.Exchanges[i].Name, 
+					"error", err)
+			}
+		}
+	}
 	
-	// Ожидание завершения горутин
+	// Ожидание завершения всех горутин
 	done := make(chan struct{})
 	go func() {
 		a.wg.Wait()
@@ -370,8 +529,10 @@ func (a *Application) Shutdown(ctx context.Context) {
 
 	select {
 	case <-done:
-		slog.Info("Application stopped gracefully")
-	case <-time.After(10 * time.Second):
-		slog.Warn("Forced shutdown after timeout")
+		slog.Info("All goroutines stopped successfully")
+		return nil
+	case <-ctx.Done():
+		slog.Warn("Shutdown timeout exceeded, some goroutines may not have stopped gracefully")
+		return ctx.Err()
 	}
 }

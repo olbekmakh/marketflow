@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 9000
 
 database:
   host: localhost
@@ -20,9 +20,9 @@ exchanges:
   - name: "test-exchange1"
     host: "127.0.0.1"
     port: 40101
-  - name: "test-exchange2" 
+  - name: "test-exchange2"
     host: "127.0.0.1"
     port: 40102
   - name: "test-exchange3"
-    host: "127.0.0.1" 
+    host: "127.0.0.1"
     port: 40103
