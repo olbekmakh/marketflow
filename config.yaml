@@ -1,5 +1,5 @@
 server:
-  port: 9000
+  port: 8080
 
 database:
   host: localhost
@@ -17,12 +17,13 @@ redis:
   ttl: 300s
 
 exchanges:
-  - name: "test-exchange1"
+  - name: "exchange1"
     host: "127.0.0.1"
     port: 40101
-  - name: "test-exchange2"
+  - name: "exchange2"
     host: "127.0.0.1"
     port: 40102
-  - name: "test-exchange3"
+  - name: "exchange3"
     host: "127.0.0.1"
     port: 40103
+EOF

@@ -1,4 +1,4 @@
-.PHONY: build run test clean
+.PHONY: build run test clean docker-setup docker-clean
 
 build:
 	go build -o marketflow .
@@ -22,3 +22,4 @@ docker-setup:
 docker-clean:
 	docker stop postgres-marketflow redis-marketflow || true
 	docker rm postgres-marketflow redis-marketflow || true
+EOF
