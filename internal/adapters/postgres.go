@@ -1,15 +1,14 @@
-// internal/adapters/postgres.go
 package adapters
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"marketflow/internal/config"
+	"marketflow/internal/domain"
 	"time"
 
 	_ "github.com/lib/pq"
-	"marketflow/internal/config"
-	"marketflow/internal/domain"
 )
 
 type PostgresAdapter struct {

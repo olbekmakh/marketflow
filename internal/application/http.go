@@ -1,18 +1,17 @@
-// internal/application/http.go
 package application
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"marketflow/internal/domain"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
-	"log/slog"
-	"marketflow/internal/domain"
 )
 
 type HTTPServer struct {
@@ -49,11 +48,9 @@ func (h *HTTPServer) setupRoutes(router *mux.Router) {
 	router.HandleFunc("/prices/average/{symbol}", h.getAveragePrice).Methods("GET")
 	router.HandleFunc("/prices/average/{exchange}/{symbol}", h.getAveragePriceByExchange).Methods("GET")
 
-	// Mode endpoints
 	router.HandleFunc("/mode/test", h.switchToTestMode).Methods("POST")
 	router.HandleFunc("/mode/live", h.switchToLiveMode).Methods("POST")
 
-	// Health endpoint
 	router.HandleFunc("/health", h.getHealth).Methods("GET")
 }
 
@@ -61,7 +58,6 @@ func (h *HTTPServer) getLatestPrice(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	symbol := vars["symbol"]
 
-	// Получаем цену от любой биржи (берем первую найденную)
 	for _, exchCfg := range h.app.config.Exchanges {
 		price, err := h.app.GetLatestPrice(exchCfg.Name, symbol)
 		if err == nil {
@@ -217,7 +213,7 @@ func (h *HTTPServer) getHealth(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPServer) parsePeriod(period string) time.Duration {
 	if period == "" {
-		return 24 * time.Hour // по умолчанию 24 часа
+		return 24 * time.Hour
 	}
 
 	if len(period) < 2 {
@@ -246,7 +242,7 @@ func (h *HTTPServer) parsePeriod(period string) time.Duration {
 
 func (h *HTTPServer) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status) // ✅ исправлено
+	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		slog.Error("Failed to encode JSON response", "error", err)
 	}
@@ -254,7 +250,7 @@ func (h *HTTPServer) writeJSON(w http.ResponseWriter, status int, data interface
 
 func (h *HTTPServer) writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status) // ✅ правильно
+	w.WriteHeader(status)
 	response := map[string]string{"error": message}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		slog.Error("Failed to encode error response", "error", err)

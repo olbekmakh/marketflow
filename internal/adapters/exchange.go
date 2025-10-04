@@ -1,4 +1,3 @@
-// internal/adapters/exchange.go
 package adapters
 
 import (
@@ -7,11 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"marketflow/internal/domain"
 	"net"
 	"strings"
 	"time"
-
-	"marketflow/internal/domain"
 )
 
 type ExchangeAdapter struct {
@@ -33,7 +31,7 @@ func NewExchangeAdapter(name, host string, port int) *ExchangeAdapter {
 
 func (e *ExchangeAdapter) Connect(ctx context.Context) error {
 	address := fmt.Sprintf("%s:%d", e.host, e.port)
-	
+
 	var err error
 	for retries := 0; retries < 5; retries++ {
 		e.conn, err = net.DialTimeout("tcp", address, 5*time.Second)
@@ -41,12 +39,12 @@ func (e *ExchangeAdapter) Connect(ctx context.Context) error {
 			slog.Info("Connected to exchange", "exchange", e.name, "address", address)
 			return nil
 		}
-		
-		slog.Warn("Failed to connect to exchange, retrying...", 
+
+		slog.Warn("Failed to connect to exchange, retrying...",
 			"exchange", e.name, "error", err, "retry", retries+1)
 		time.Sleep(time.Duration(retries+1) * time.Second)
 	}
-	
+
 	return fmt.Errorf("failed to connect to exchange %s: %w", e.name, err)
 }
 
@@ -68,7 +66,7 @@ func (e *ExchangeAdapter) Subscribe(symbols []string) (<-chan domain.PriceUpdate
 
 func (e *ExchangeAdapter) readData() {
 	defer close(e.ch)
-	
+
 	scanner := bufio.NewScanner(e.conn)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

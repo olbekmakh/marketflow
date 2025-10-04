@@ -3,9 +3,8 @@ package application
 import (
 	"context"
 	"log/slog"
-	"time"
-
 	"marketflow/internal/domain"
+	"time"
 )
 
 type Batcher struct {
@@ -37,28 +36,28 @@ func (b *Batcher) Start(ctx context.Context) {
 	ticker := time.NewTicker(b.flushPeriod)
 	defer ticker.Stop()
 
-	slog.Info("Started batcher", 
-		"batch_size", b.batchSize, 
+	slog.Info("Started batcher",
+		"batch_size", b.batchSize,
 		"flush_period", b.flushPeriod)
 
 	for {
 		select {
 		case price := <-b.batchCh:
 			batch = append(batch, price)
-			
+
 			if len(batch) >= b.batchSize {
 				b.flush(ctx, batch)
-				batch = batch[:0] // Clear batch
+				batch = batch[:0]
 			}
-			
+
 		case <-ticker.C:
 			if len(batch) > 0 {
 				b.flush(ctx, batch)
-				batch = batch[:0] // Clear batch
+				batch = batch[:0]
 			}
-			
+
 		case <-ctx.Done():
-			// Flush remaining items
+
 			if len(batch) > 0 {
 				b.flush(ctx, batch)
 			}
@@ -70,18 +69,18 @@ func (b *Batcher) Start(ctx context.Context) {
 
 func (b *Batcher) flush(ctx context.Context, batch []*domain.AggregatedPrice) {
 	start := time.Now()
-	
+
 	for _, price := range batch {
 		if err := b.db.Store(ctx, price); err != nil {
-			slog.Error("Failed to store batch item", 
+			slog.Error("Failed to store batch item",
 				"exchange", price.Exchange,
 				"symbol", price.PairName,
 				"error", err)
 		}
 	}
-	
+
 	duration := time.Since(start)
-	slog.Info("Batch flushed to database", 
+	slog.Info("Batch flushed to database",
 		"count", len(batch),
 		"duration", duration)
 }

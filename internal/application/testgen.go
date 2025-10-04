@@ -2,10 +2,9 @@ package application
 
 import (
 	"context"
+	"marketflow/internal/domain"
 	"math/rand"
 	"time"
-
-	"marketflow/internal/domain"
 )
 
 type TestDataGenerator struct {
@@ -34,18 +33,17 @@ func (g *TestDataGenerator) Start(ctx context.Context) <-chan domain.PriceUpdate
 
 	go func() {
 		defer close(output)
-		
+
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
-				// Генерируем случайное обновление цены
+
 				symbol := g.symbols[rand.Intn(len(g.symbols))]
 				basePrice := g.prices[symbol]
-				
-				// Изменение цены на ±2%
+
 				change := (rand.Float64() - 0.5) * 0.04
 				newPrice := basePrice * (1 + change)
 				g.prices[symbol] = newPrice

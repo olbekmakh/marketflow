@@ -1,6 +1,3 @@
-# Остановите текущий сервер (Ctrl+C)
-
-cat > main.go << 'EOF'
 package main
 
 import (
@@ -13,8 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,7 +17,7 @@ import (
 
 var (
 	currentMode = "test"
-	prices = map[string]float64{
+	prices      = map[string]float64{
 		"BTCUSDT":  50000.0,
 		"ETHUSDT":  3000.0,
 		"DOGEUSDT": 0.25,
@@ -76,22 +71,22 @@ func main() {
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 
-		log.Println("🛑 Shutting down server...")
-		
+		log.Println(" Shutting down server...")
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		
+
 		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("❌ Server shutdown error: %v", err)
+			log.Printf(" Server shutdown error: %v", err)
 		}
-		log.Println("✅ Server stopped")
+		log.Println("Server stopped")
 		os.Exit(0)
 	}()
 
-	log.Printf("🚀 MarketFlow started on http://localhost:%d", *port)
-	log.Printf("📊 Mode: %s", currentMode)
-	log.Printf("💰 Symbols: %s", strings.Join(getSymbols(), ", "))
-	log.Printf("🔧 Endpoints:")
+	log.Printf(" MarketFlow started on http://localhost:%d", *port)
+	log.Printf(" Mode: %s", currentMode)
+	log.Printf(" Symbols: %s", strings.Join(getSymbols(), ", "))
+	log.Printf(" Endpoints:")
 	log.Printf("   GET  /health")
 	log.Printf("   POST /mode/test")
 	log.Printf("   POST /mode/live")
@@ -101,7 +96,7 @@ func main() {
 	log.Printf("   GET  /prices/average/{symbol}[?period=1m]")
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("❌ Server error: %v", err)
+		log.Fatalf(" Server error: %v", err)
 	}
 }
 
@@ -109,13 +104,13 @@ func startPriceGenerator() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	log.Println("📈 Price generator started")
+	log.Println("Price generator started")
 
 	for {
 		select {
 		case <-ticker.C:
 			for symbol := range prices {
-				change := (rand.Float64() - 0.5) * 0.02 // ±1%
+				change := (rand.Float64() - 0.5) * 0.02
 				newPrice := prices[symbol] * (1 + change)
 				if newPrice > 0 {
 					prices[symbol] = newPrice
@@ -127,18 +122,15 @@ func startPriceGenerator() {
 
 func corsWrapper(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		
-		// Handle preflight requests
+
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// Add request logging
 		start := time.Now()
 		handler(w, r)
 		log.Printf("📡 %s %s - %v", r.Method, r.URL.Path, time.Since(start))
@@ -152,14 +144,14 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 			"status": fmt.Sprintf("healthy (%s mode)", currentMode),
 			"connections": map[string]string{
 				"test_generator": "active",
-				"database":      "simulated",
-				"cache":         "simulated",
+				"database":       "simulated",
+				"cache":          "simulated",
 			},
 			"timestamp": time.Now().Format(time.RFC3339),
 			"version":   "1.0.0",
 		},
 	}
-	
+
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -169,7 +161,6 @@ func modeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine mode from URL
 	var newMode string
 	if strings.Contains(r.URL.Path, "/mode/test") {
 		newMode = "test"
@@ -181,7 +172,7 @@ func modeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	currentMode = newMode
-	log.Printf("🔄 Mode switched to: %s", newMode)
+	log.Printf("Mode switched to: %s", newMode)
 
 	response := APIResponse{
 		Success: true,
@@ -202,10 +193,9 @@ func pricesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse URL path: /prices/{type}/{symbol}
 	path := strings.TrimPrefix(r.URL.Path, "/prices/")
 	parts := strings.Split(path, "/")
-	
+
 	if len(parts) < 2 {
 		writeError(w, http.StatusBadRequest, "Invalid URL format. Expected: /prices/{type}/{symbol}")
 		return
@@ -214,26 +204,22 @@ func pricesHandler(w http.ResponseWriter, r *http.Request) {
 	priceType := parts[0]
 	symbol := strings.ToUpper(parts[1])
 
-	// Validate symbol
 	if !isValidSymbol(symbol) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid symbol: %s", symbol))
 		return
 	}
 
-	// Get base price
 	basePrice, exists := prices[symbol]
 	if !exists {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Price not found for symbol: %s", symbol))
 		return
 	}
 
-	// Parse period
 	period := r.URL.Query().Get("period")
 	if period == "" {
 		period = "1h"
 	}
 
-	// Handle different price types
 	switch priceType {
 	case "latest":
 		handleLatestPrice(w, symbol, basePrice)
@@ -263,7 +249,7 @@ func handleLatestPrice(w http.ResponseWriter, symbol string, price float64) {
 
 func handleHighestPrice(w http.ResponseWriter, symbol string, basePrice float64, period string) {
 	maxPrice := basePrice * 1.05
-	
+
 	response := APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
@@ -281,7 +267,7 @@ func handleHighestPrice(w http.ResponseWriter, symbol string, basePrice float64,
 
 func handleLowestPrice(w http.ResponseWriter, symbol string, basePrice float64, period string) {
 	minPrice := basePrice * 0.95
-	
+
 	response := APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
@@ -340,9 +326,9 @@ type APIResponse struct {
 func writeJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	
+
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("❌ JSON encoding error: %v", err)
+		log.Printf(" JSON encoding error: %v", err)
 	}
 }
 
@@ -353,4 +339,3 @@ func writeError(w http.ResponseWriter, statusCode int, message string) {
 	}
 	writeJSON(w, statusCode, response)
 }
-EOF

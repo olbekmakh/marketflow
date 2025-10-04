@@ -1,10 +1,8 @@
-// internal/application/fanin.go
 package application
 
 import (
-	"sync"
-
 	"marketflow/internal/domain"
+	"sync"
 )
 
 type FanIn struct {
@@ -19,13 +17,11 @@ func NewFanIn(inputs []<-chan domain.PriceUpdate) *FanIn {
 		output: make(chan domain.PriceUpdate, 1000),
 	}
 
-	// Запускаем горутину для каждого входного канала
 	for _, input := range inputs {
 		fanIn.wg.Add(1)
 		go fanIn.merge(input)
 	}
 
-	// Закрываем выходной канал когда все входные закрыты
 	go func() {
 		fanIn.wg.Wait()
 		close(fanIn.output)
@@ -36,12 +32,12 @@ func NewFanIn(inputs []<-chan domain.PriceUpdate) *FanIn {
 
 func (f *FanIn) merge(input <-chan domain.PriceUpdate) {
 	defer f.wg.Done()
-	
+
 	for update := range input {
 		select {
 		case f.output <- update:
 		default:
-			// Если канал заполнен, пропускаем обновление
+
 		}
 	}
 }

@@ -1,4 +1,3 @@
-// internal/domain/ports.go
 package domain
 
 import (

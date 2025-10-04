@@ -1,16 +1,15 @@
-// internal/adapters/redis.go
 package adapters
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"marketflow/internal/config"
+	"marketflow/internal/domain"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"marketflow/internal/config"
-	"marketflow/internal/domain"
 )
 
 type RedisAdapter struct {
@@ -54,7 +53,7 @@ func (r *RedisAdapter) GetLatestPrice(ctx context.Context, exchange, symbol stri
 
 func (r *RedisAdapter) StoreRecentPrice(ctx context.Context, exchange, symbol string, price float64, timestamp time.Time) error {
 	key := fmt.Sprintf("recent:%s:%s", exchange, symbol)
-	
+
 	priceUpdate := domain.PriceUpdate{
 		Exchange:  exchange,
 		Symbol:    symbol,
@@ -73,7 +72,7 @@ func (r *RedisAdapter) StoreRecentPrice(ctx context.Context, exchange, symbol st
 
 func (r *RedisAdapter) GetRecentPrices(ctx context.Context, exchange, symbol string, since time.Time) ([]domain.PriceUpdate, error) {
 	key := fmt.Sprintf("recent:%s:%s", exchange, symbol)
-	
+
 	minScore := strconv.FormatInt(since.Unix(), 10)
 	maxScore := "+inf"
 
@@ -81,7 +80,6 @@ func (r *RedisAdapter) GetRecentPrices(ctx context.Context, exchange, symbol str
 		Min: minScore,
 		Max: maxScore,
 	}).Result()
-	
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +97,7 @@ func (r *RedisAdapter) GetRecentPrices(ctx context.Context, exchange, symbol str
 
 func (r *RedisAdapter) CleanExpiredData(ctx context.Context) error {
 	cutoff := time.Now().Add(-2 * time.Minute).Unix()
-	
+
 	keys, err := r.client.Keys(ctx, "recent:*").Result()
 	if err != nil {
 		return err
