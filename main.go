@@ -49,23 +49,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Запуск генератора цен
 	go startPriceGenerator()
 
-	// Настройка маршрутов
 	http.HandleFunc("/health", corsWrapper(healthHandler))
 	http.HandleFunc("/mode/test", corsWrapper(modeHandler))
 	http.HandleFunc("/mode/live", corsWrapper(modeHandler))
 	http.HandleFunc("/prices/", corsWrapper(pricesHandler))
 
-	// Настройка сервера
 	server = &http.Server{
 		Addr:         fmt.Sprintf(":%d", *port),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
 
-	// Graceful shutdown
+	
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -133,7 +130,7 @@ func corsWrapper(handler http.HandlerFunc) http.HandlerFunc {
 
 		start := time.Now()
 		handler(w, r)
-		log.Printf("📡 %s %s - %v", r.Method, r.URL.Path, time.Since(start))
+		log.Printf(" %s %s - %v", r.Method, r.URL.Path, time.Since(start))
 	}
 }
 

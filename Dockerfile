@@ -1,34 +1,28 @@
-# 1️⃣ Этап сборки бинарника
-FROM golang:1.22-alpine AS builder
+# 1️⃣ Используем официальный образ Go
+FROM golang:1.22 AS builder
 
+# 2️⃣ Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Устанавливаем зависимости
+# 3️⃣ Копируем файлы проекта
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Копируем весь исходный код
 COPY . .
 
-# Собираем бинарник
+# 4️⃣ Собираем бинарник
 RUN go build -o marketflow .
 
-# 2️⃣ Этап финального образа
-FROM alpine:latest
+# 5️⃣ Используем минимальный образ для запуска
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Копируем бинарник из первого этапа
-COPY --from=builder /app/marketflow /app/marketflow
+# 6️⃣ Копируем бинарник из builder-образа
+COPY --from=builder /app/marketflow /app/
 
-# Копируем конфигурацию
-COPY config.yaml /app/config.yaml
-
-# Устанавливаем временную зону и зависимости (опционально)
-RUN apk add --no-cache tzdata
-
-# Открываем порт
+# 7️⃣ Указываем порт, который будет слушать приложение
 EXPOSE 8080
 
-# Команда запуска
-ENTRYPOINT ["/app/marketflow"]
+# 8️⃣ Команда запуска
+ENTRYPOINT ["./marketflow"]
