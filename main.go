@@ -62,7 +62,6 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 	}
 
-	
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
