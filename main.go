@@ -26,6 +26,13 @@ var (
 	}
 	server *http.Server
 )
+func getExchangeName() string {
+	if currentMode == "test" {
+		return "test"
+	}
+	return "live"
+}
+
 
 func main() {
 	var (
@@ -236,7 +243,7 @@ func handleLatestPrice(w http.ResponseWriter, symbol string, price float64) {
 		Data: map[string]interface{}{
 			"symbol":    symbol,
 			"price":     price,
-			"exchange":  "test",
+			"exchange": getExchangeName(),
 			"timestamp": time.Now().Format(time.RFC3339),
 		},
 	}
@@ -250,7 +257,7 @@ func handleHighestPrice(w http.ResponseWriter, symbol string, basePrice float64,
 		Success: true,
 		Data: map[string]interface{}{
 			"pair_name":     symbol,
-			"exchange":      "test",
+			"exchange": getExchangeName(),
 			"timestamp":     time.Now().Format(time.RFC3339),
 			"period":        period,
 			"average_price": basePrice,
@@ -268,7 +275,7 @@ func handleLowestPrice(w http.ResponseWriter, symbol string, basePrice float64, 
 		Success: true,
 		Data: map[string]interface{}{
 			"pair_name":     symbol,
-			"exchange":      "test",
+			"exchange": getExchangeName(),
 			"timestamp":     time.Now().Format(time.RFC3339),
 			"period":        period,
 			"average_price": basePrice,
@@ -284,7 +291,7 @@ func handleAveragePrice(w http.ResponseWriter, symbol string, basePrice float64,
 		Success: true,
 		Data: map[string]interface{}{
 			"pair_name":     symbol,
-			"exchange":      "test",
+			"exchange": getExchangeName(),
 			"timestamp":     time.Now().Format(time.RFC3339),
 			"period":        period,
 			"average_price": basePrice,
