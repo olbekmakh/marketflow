@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -25,14 +27,16 @@ var (
 		"SOLUSDT":  150.0,
 	}
 	server *http.Server
+	
+	// Регулярное выражение для валидации периода
+	periodRegex = regexp.MustCompile(`^([1-9][0-9]*)(s|m|h)$`)
 )
-func getExchangeName() string {
-	if currentMode == "test" {
-		return "test"
-	}
-	return "live"
-}
 
+type APIResponse struct {
+	Success bool        `json:"success"`
+	Data    interface{} `json:"data,omitempty"`
+	Error   string      `json:"error,omitempty"`
+}
 
 func main() {
 	var (
@@ -82,21 +86,25 @@ func main() {
 		if err := server.Shutdown(ctx); err != nil {
 			log.Printf(" Server shutdown error: %v", err)
 		}
-		log.Println("Server stopped")
+		log.Println(" Server stopped")
 		os.Exit(0)
 	}()
 
 	log.Printf(" MarketFlow started on http://localhost:%d", *port)
 	log.Printf(" Mode: %s", currentMode)
-	log.Printf(" Symbols: %s", strings.Join(getSymbols(), ", "))
-	log.Printf(" Endpoints:")
+	log.Printf("  Symbols: %s", strings.Join(getSymbols(), ", "))
+	log.Printf("  Endpoints:")
 	log.Printf("   GET  /health")
 	log.Printf("   POST /mode/test")
 	log.Printf("   POST /mode/live")
 	log.Printf("   GET  /prices/latest/{symbol}")
+	log.Printf("   GET  /prices/latest/{exchange}/{symbol}")
 	log.Printf("   GET  /prices/highest/{symbol}[?period=1m]")
+	log.Printf("   GET  /prices/highest/{exchange}/{symbol}[?period=1m]")
 	log.Printf("   GET  /prices/lowest/{symbol}[?period=1m]")
+	log.Printf("   GET  /prices/lowest/{exchange}/{symbol}[?period=1m]")
 	log.Printf("   GET  /prices/average/{symbol}[?period=1m]")
+	log.Printf("   GET  /prices/average/{exchange}/{symbol}[?period=1m]")
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf(" Server error: %v", err)
@@ -107,7 +115,7 @@ func startPriceGenerator() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	log.Println("Price generator started")
+	log.Println(" Price generator started")
 
 	for {
 		select {
@@ -160,7 +168,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func modeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed. Use POST method.")
 		return
 	}
 
@@ -170,12 +178,12 @@ func modeHandler(w http.ResponseWriter, r *http.Request) {
 	} else if strings.Contains(r.URL.Path, "/mode/live") {
 		newMode = "live"
 	} else {
-		writeError(w, http.StatusNotFound, "Invalid mode endpoint")
+		writeError(w, http.StatusNotFound, "Invalid mode endpoint. Use /mode/test or /mode/live")
 		return
 	}
 
 	currentMode = newMode
-	log.Printf("Mode switched to: %s", newMode)
+	log.Printf(" Mode switched to: %s", newMode)
 
 	response := APIResponse{
 		Success: true,
@@ -192,72 +200,145 @@ func modeHandler(w http.ResponseWriter, r *http.Request) {
 
 func pricesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed. Use GET method.")
 		return
 	}
 
+	// Парсим URL
 	path := strings.TrimPrefix(r.URL.Path, "/prices/")
 	parts := strings.Split(path, "/")
 
-	if len(parts) < 2 {
-		writeError(w, http.StatusBadRequest, "Invalid URL format. Expected: /prices/{type}/{symbol}")
+	var priceType, exchange, symbol string
+
+	if len(parts) == 2 {
+		priceType = parts[0]
+		symbol = strings.ToUpper(parts[1])
+		exchange = ""
+	} else if len(parts) == 3 {
+		priceType = parts[0]
+		exchange = parts[1]
+		symbol = strings.ToUpper(parts[2])
+	} else {
+		writeError(w, http.StatusBadRequest,
+			"Invalid URL format. Expected: /prices/{type}/{symbol} or /prices/{type}/{exchange}/{symbol}")
 		return
 	}
 
-	priceType := parts[0]
-	symbol := strings.ToUpper(parts[1])
-
+	// Валидация символа
 	if !isValidSymbol(symbol) {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid symbol: %s", symbol))
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("Invalid symbol: %s. Valid symbols: BTCUSDT, ETHUSDT, DOGEUSDT, TONUSDT, SOLUSDT", symbol))
 		return
 	}
 
+	// Валидация биржи (если указана)
+	if exchange != "" && !isValidExchange(exchange) {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("Invalid exchange: %s. Valid exchanges: exchange1, exchange2, exchange3, test", exchange))
+		return
+	}
+
+	// Получаем текущую цену
 	basePrice, exists := prices[symbol]
 	if !exists {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("Price not found for symbol: %s", symbol))
+		writeError(w, http.StatusNotFound,
+			fmt.Sprintf("Price not found for symbol: %s", symbol))
 		return
 	}
 
-	period := r.URL.Query().Get("period")
-	if period == "" {
-		period = "1h"
+	// Парсим и валидируем период
+	periodStr := r.URL.Query().Get("period")
+	if periodStr == "" {
+		periodStr = "5m" // Значение по умолчанию
 	}
 
+	// Валидация периода
+	if err := validatePeriod(periodStr); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Маршрутизация по типу цены
 	switch priceType {
 	case "latest":
-		handleLatestPrice(w, symbol, basePrice)
+		handleLatestPrice(w, symbol, exchange, basePrice)
 	case "highest":
-		handleHighestPrice(w, symbol, basePrice, period)
+		handleHighestPrice(w, symbol, exchange, basePrice, periodStr)
 	case "lowest":
-		handleLowestPrice(w, symbol, basePrice, period)
+		handleLowestPrice(w, symbol, exchange, basePrice, periodStr)
 	case "average":
-		handleAveragePrice(w, symbol, basePrice, period)
+		handleAveragePrice(w, symbol, exchange, basePrice, periodStr)
 	default:
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid price type: %s", priceType))
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("Invalid price type: %s. Valid types: latest, highest, lowest, average", priceType))
 	}
 }
 
-func handleLatestPrice(w http.ResponseWriter, symbol string, price float64) {
+// validatePeriod проверяет корректность формата периода
+func validatePeriod(period string) error {
+	// Проверка с помощью регулярного выражения
+	if !periodRegex.MatchString(period) {
+		return fmt.Errorf("Invalid period format: '%s'. Expected format: positive number + unit (s/m). Examples: 1s, 5m. Invalid: 0s, -1m, 5, 10x", period)
+	}
+
+	// Дополнительная проверка: извлекаем число и проверяем что оно положительное
+	matches := periodRegex.FindStringSubmatch(period)
+	if len(matches) != 3 {
+		return fmt.Errorf("Invalid period format: '%s'", period)
+	}
+
+	value, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return fmt.Errorf("Invalid period value: '%s'", period)
+	}
+
+	if value <= 0 {
+		return fmt.Errorf("Period must be a positive number, got: %d", value)
+	}
+
+	// Проверка разумных ограничений (опционально)
+	unit := matches[2]
+	maxValues := map[string]int{
+		"s": 3600,  // Максимум 3600 секунд (1 час)
+		"m": 1440,  // Максимум 1440 минут (24 часа)
+	}
+
+	if max, ok := maxValues[unit]; ok && value > max {
+		return fmt.Errorf("Period too large: %s. Maximum allowed: %d%s", period, max, unit)
+	}
+
+	return nil
+}
+
+func handleLatestPrice(w http.ResponseWriter, symbol, exchange string, price float64) {
+	if exchange == "" {
+		exchange = getExchangeName()
+	}
+
 	response := APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
 			"symbol":    symbol,
 			"price":     price,
-			"exchange": getExchangeName(),
+			"exchange":  exchange,
 			"timestamp": time.Now().Format(time.RFC3339),
 		},
 	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-func handleHighestPrice(w http.ResponseWriter, symbol string, basePrice float64, period string) {
+func handleHighestPrice(w http.ResponseWriter, symbol, exchange string, basePrice float64, period string) {
+	if exchange == "" {
+		exchange = getExchangeName()
+	}
+
 	maxPrice := basePrice * 1.05
 
 	response := APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
 			"pair_name":     symbol,
-			"exchange": getExchangeName(),
+			"exchange":      exchange,
 			"timestamp":     time.Now().Format(time.RFC3339),
 			"period":        period,
 			"average_price": basePrice,
@@ -268,14 +349,18 @@ func handleHighestPrice(w http.ResponseWriter, symbol string, basePrice float64,
 	writeJSON(w, http.StatusOK, response)
 }
 
-func handleLowestPrice(w http.ResponseWriter, symbol string, basePrice float64, period string) {
+func handleLowestPrice(w http.ResponseWriter, symbol, exchange string, basePrice float64, period string) {
+	if exchange == "" {
+		exchange = getExchangeName()
+	}
+
 	minPrice := basePrice * 0.95
 
 	response := APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
 			"pair_name":     symbol,
-			"exchange": getExchangeName(),
+			"exchange":      exchange,
 			"timestamp":     time.Now().Format(time.RFC3339),
 			"period":        period,
 			"average_price": basePrice,
@@ -286,12 +371,16 @@ func handleLowestPrice(w http.ResponseWriter, symbol string, basePrice float64, 
 	writeJSON(w, http.StatusOK, response)
 }
 
-func handleAveragePrice(w http.ResponseWriter, symbol string, basePrice float64, period string) {
+func handleAveragePrice(w http.ResponseWriter, symbol, exchange string, basePrice float64, period string) {
+	if exchange == "" {
+		exchange = getExchangeName()
+	}
+
 	response := APIResponse{
 		Success: true,
 		Data: map[string]interface{}{
 			"pair_name":     symbol,
-			"exchange": getExchangeName(),
+			"exchange":      exchange,
 			"timestamp":     time.Now().Format(time.RFC3339),
 			"period":        period,
 			"average_price": basePrice,
@@ -300,6 +389,13 @@ func handleAveragePrice(w http.ResponseWriter, symbol string, basePrice float64,
 		},
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func getExchangeName() string {
+	if currentMode == "test" {
+		return "test"
+	}
+	return "live"
 }
 
 func isValidSymbol(symbol string) bool {
@@ -312,18 +408,22 @@ func isValidSymbol(symbol string) bool {
 	return false
 }
 
+func isValidExchange(exchange string) bool {
+	validExchanges := []string{"exchange1", "exchange2", "exchange3", "test", "live"}
+	for _, valid := range validExchanges {
+		if exchange == valid {
+			return true
+		}
+	}
+	return false
+}
+
 func getSymbols() []string {
 	symbols := make([]string, 0, len(prices))
 	for symbol := range prices {
 		symbols = append(symbols, symbol)
 	}
 	return symbols
-}
-
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, data interface{}) {
