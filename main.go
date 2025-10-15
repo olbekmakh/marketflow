@@ -28,8 +28,8 @@ var (
 	}
 	server *http.Server
 	
-	// Регулярное выражение для валидации периода
-	periodRegex = regexp.MustCompile(`^([1-9][0-9]*)(s|m|h)$`)
+	// Регулярное выражение для валидации периода: только s и m
+	periodRegex = regexp.MustCompile(`^([1-9][0-9]*)(s|m)$`)
 )
 
 type APIResponse struct {
@@ -92,19 +92,19 @@ func main() {
 
 	log.Printf(" MarketFlow started on http://localhost:%d", *port)
 	log.Printf(" Mode: %s", currentMode)
-	log.Printf("  Symbols: %s", strings.Join(getSymbols(), ", "))
-	log.Printf("  Endpoints:")
+	log.Printf(" Symbols: %s", strings.Join(getSymbols(), ", "))
+	log.Printf(" Endpoints:")
 	log.Printf("   GET  /health")
 	log.Printf("   POST /mode/test")
 	log.Printf("   POST /mode/live")
 	log.Printf("   GET  /prices/latest/{symbol}")
 	log.Printf("   GET  /prices/latest/{exchange}/{symbol}")
 	log.Printf("   GET  /prices/highest/{symbol}[?period=1m]")
-	log.Printf("   GET  /prices/highest/{exchange}/{symbol}[?period=1m]")
-	log.Printf("   GET  /prices/lowest/{symbol}[?period=1m]")
+	log.Printf("   GET  /prices/highest/{exchange}/{symbol}[?period=5m]")
+	log.Printf("   GET  /prices/lowest/{symbol}[?period=30s]")
 	log.Printf("   GET  /prices/lowest/{exchange}/{symbol}[?period=1m]")
-	log.Printf("   GET  /prices/average/{symbol}[?period=1m]")
-	log.Printf("   GET  /prices/average/{exchange}/{symbol}[?period=1m]")
+	log.Printf("   GET  /prices/average/{symbol}[?period=2m]")
+	log.Printf("   GET  /prices/average/{exchange}/{symbol}[?period=10s]")
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf(" Server error: %v", err)
@@ -246,16 +246,36 @@ func pricesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Парсим и валидируем период
-	periodStr := r.URL.Query().Get("period")
-	if periodStr == "" {
-		periodStr = "5m" // Значение по умолчанию
+	// Парсим период из query параметров
+	queryParams := r.URL.Query()
+	periodStr := ""
+	hasPeriodParam := false
+	
+	// Проверяем наличие параметра period в query
+	if _, exists := queryParams["period"]; exists {
+		hasPeriodParam = true
+		periodStr = queryParams.Get("period")
 	}
-
-	// Валидация периода
-	if err := validatePeriod(periodStr); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	
+	// Если параметр period указан явно
+	if hasPeriodParam {
+		// Проверяем на пустое значение или только пробелы
+		trimmedPeriod := strings.TrimSpace(periodStr)
+		if trimmedPeriod == "" {
+			writeError(w, http.StatusBadRequest, 
+				"Period parameter is empty. Expected format: positive number + unit (s or m). Examples: 1s, 5m, 30s, 10m")
+			return
+		}
+		
+		// Валидация периода
+		if err := validatePeriod(trimmedPeriod); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		periodStr = trimmedPeriod
+	} else {
+		// Если параметр period не указан, используем дефолт
+		periodStr = "1m"
 	}
 
 	// Маршрутизация по типу цены
@@ -276,12 +296,17 @@ func pricesHandler(w http.ResponseWriter, r *http.Request) {
 
 // validatePeriod проверяет корректность формата периода
 func validatePeriod(period string) error {
-	// Проверка с помощью регулярного выражения
-	if !periodRegex.MatchString(period) {
-		return fmt.Errorf("Invalid period format: '%s'. Expected format: positive number + unit (s/m). Examples: 1s, 5m. Invalid: 0s, -1m, 5, 10x", period)
+	// Проверка на специальные символы
+	if period == "." || period == "," || period == "-" || period == "+" {
+		return fmt.Errorf("Invalid period format: '%s'. Expected format: positive number + unit (s or m). Examples: 1s, 5m, 30s, 10m", period)
 	}
 
-	// Дополнительная проверка: извлекаем число и проверяем что оно положительное
+	// Проверка с помощью регулярного выражения
+	if !periodRegex.MatchString(period) {
+		return fmt.Errorf("Invalid period format: '%s'. Expected format: positive number + unit (s or m). Examples: 1s, 5m, 30s, 10m. Invalid examples: 0s, -1m, 5, 10x, 1h, period=", period)
+	}
+
+	// Извлекаем число и проверяем что оно положительное
 	matches := periodRegex.FindStringSubmatch(period)
 	if len(matches) != 3 {
 		return fmt.Errorf("Invalid period format: '%s'", period)
@@ -292,19 +317,27 @@ func validatePeriod(period string) error {
 		return fmt.Errorf("Invalid period value: '%s'", period)
 	}
 
+	// Проверка что число положительное
 	if value <= 0 {
-		return fmt.Errorf("Period must be a positive number, got: %d", value)
+		return fmt.Errorf("Period must be a positive number, got: %d%s", value, matches[2])
 	}
 
-	// Проверка разумных ограничений (опционально)
+	// Проверка разумных ограничений
 	unit := matches[2]
-	maxValues := map[string]int{
-		"s": 3600,  // Максимум 3600 секунд (1 час)
-		"m": 1440,  // Максимум 1440 минут (24 часа)
+	var maxValue int
+	var maxDescription string
+
+	switch unit {
+	case "s":
+		maxValue = 3600 // Максимум 3600 секунд (60 минут)
+		maxDescription = "3600s (60 minutes)"
+	case "m":
+		maxValue = 1440 // Максимум 1440 минут (24 часа)
+		maxDescription = "1440m (24 hours)"
 	}
 
-	if max, ok := maxValues[unit]; ok && value > max {
-		return fmt.Errorf("Period too large: %s. Maximum allowed: %d%s", period, max, unit)
+	if value > maxValue {
+		return fmt.Errorf("Period too large: %s. Maximum allowed: %s", period, maxDescription)
 	}
 
 	return nil
@@ -431,7 +464,7 @@ func writeJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.WriteHeader(statusCode)
 
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf(" JSON encoding error: %v", err)
+		log.Printf("JSON encoding error: %v", err)
 	}
 }
 
