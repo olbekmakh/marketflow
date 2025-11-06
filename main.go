@@ -27,7 +27,7 @@ var (
 		"SOLUSDT":  150.0,
 	}
 	server *http.Server
-	
+
 	// Регулярное выражение для валидации периода: только s и m
 	periodRegex = regexp.MustCompile(`^([1-9][0-9]*)(s|m)$`)
 )
@@ -250,23 +250,23 @@ func pricesHandler(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	periodStr := ""
 	hasPeriodParam := false
-	
+
 	// Проверяем наличие параметра period в query
 	if _, exists := queryParams["period"]; exists {
 		hasPeriodParam = true
 		periodStr = queryParams.Get("period")
 	}
-	
+
 	// Если параметр period указан явно
 	if hasPeriodParam {
 		// Проверяем на пустое значение или только пробелы
 		trimmedPeriod := strings.TrimSpace(periodStr)
 		if trimmedPeriod == "" {
-			writeError(w, http.StatusBadRequest, 
+			writeError(w, http.StatusBadRequest,
 				"Period parameter is empty. Expected format: positive number + unit (s or m). Examples: 1s, 5m, 30s, 10m")
 			return
 		}
-		
+
 		// Валидация периода
 		if err := validatePeriod(trimmedPeriod); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

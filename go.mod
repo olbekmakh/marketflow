@@ -3,10 +3,8 @@ module marketflow
 go 1.22.6
 
 require (
-	github.com/gorilla/mux v1.8.1
 	github.com/lib/pq v1.10.9
-	github.com/redis/go-redis/v9 v9.12.1
-	gopkg.in/yaml.v3 v3.0.1
+	github.com/redis/go-redis/v9 v9.16.0
 )
 
 require (
