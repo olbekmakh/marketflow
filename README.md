@@ -1,76 +1,110 @@
-# MarketFlow - Real-Time Market Data Processing System
+# MarketFlow — Real-Time Market Data Processing System
 
-## Описание
+## Description
 
-MarketFlow - это система обработки рыночных данных в реальном времени, построенная на Go с использованием принципов шестиугольной архитектуры и паттернов конкурентности.
+MarketFlow is a real-time market data processing system built with **Go**, designed using **Hexagonal Architecture (Ports & Adapters)** and concurrency patterns to ensure scalability, reliability, and clean separation of concerns.
 
-## Функциональность
+---
 
-- **Режимы работы**: Live (реальные данные с бирж) и Test (синтетические данные)
-- **Конкурентная обработка**: Worker Pool, Fan-In, Fan-Out паттерны
-- **Кэширование**: Redis для быстрого доступа к последним ценам
-- **Хранение данных**: PostgreSQL для агрегированных данных
-- **REST API**: Полный набор endpoints для получения рыночных данных
-- **Graceful Shutdown**: Корректное завершение работы
+## ✨ Functionality
 
-## Архитектура
+- **Operating Modes**
+  - **Live mode** — real market data from exchanges
+  - **Test mode** — synthetic data generation
 
-Проект следует принципам гексагональной архитектуры:
+- **Concurrent Processing**
+  - Worker Pool
+  - Fan-In / Fan-Out patterns
 
-- **Domain Layer**: Бизнес-логика и модели
-- **Application Layer**: Use cases и оркестрация
-- **Adapters**: Интеграции (PostgreSQL, Redis, HTTP, Exchange)
+- **Caching**
+  - Redis for fast access to the latest prices
 
-## Установка и запуск
+- **Data Storage**
+  - PostgreSQL for aggregated and historical data
 
-1. Установите зависимости:
+- **REST API**
+  - Full set of endpoints for retrieving market data
+
+- **Graceful Shutdown**
+  - Safe and controlled shutdown of all services and goroutines
+
+---
+
+## 🏗️ Architecture
+
+The project follows **Hexagonal Architecture (Ports & Adapters)** principles:
+
+- **Domain Layer**
+  - Core business logic and domain models
+
+- **Application Layer**
+  - Use cases and orchestration logic
+
+- **Adapters**
+  - External integrations (PostgreSQL, Redis, HTTP API, Exchanges)
+
+---
+
+## 🚀 Installation & Running
+
+### Install dependencies
+
 ```bash
 go mod tidy
-```
-
-2. Настройте базы данных:
-```bash
+Set up infrastructure
 make docker-setup
-```
-
-3. Скомпилируйте проект:
-```bash
+Build the project
 make build
-```
-
-4. Запустите приложение:
-```bash
+Run the application
 ./marketflow --port 8080
-```
+📡 API Endpoints
+Prices
+GET /prices/latest/{symbol}
+Get the latest price
 
-## API Endpoints
+GET /prices/latest/{exchange}/{symbol}
+Get the latest price from a specific exchange
 
-### Цены
-- `GET /prices/latest/{symbol}` - Последняя цена
-- `GET /prices/latest/{exchange}/{symbol}` - Последняя цена с конкретной биржи
-- `GET /prices/highest/{symbol}?period=1m` - Максимальная цена за период
-- `GET /prices/lowest/{symbol}?period=1m` - Минимальная цена за период
-- `GET /prices/average/{symbol}?period=1m` - Средняя цена за период
+GET /prices/highest/{symbol}?period=1m
+Get the highest price for a given period
 
-### Управление режимами
-- `POST /mode/test` - Переключение в тестовый режим
-- `POST /mode/live` - Переключение в режим реальных данных
+GET /prices/lowest/{symbol}?period=1m
+Get the lowest price for a given period
 
-### Здоровье системы
-- `GET /health` - Статус системы
+GET /prices/average/{symbol}?period=1m
+Get the average price for a given period
 
-## Паттерны конкурентности
+Mode Management
+POST /mode/test
+Switch to test mode (synthetic data)
 
-1. **Generator**: Генерация синтетических данных в тестовом режиме
-2. **Fan-Out**: Распределение обновлений между воркерами
-3. **Worker Pool**: Пул воркеров для обработки данных (по 5 на биржу)
-4. **Fan-In**: Агрегация данных от всех источников
+POST /mode/live
+Switch to live market data mode
 
-## Конфигурация
+System Health
+GET /health
+System health status
 
-Настройка через файл `config.yaml`:
+⚙️ Concurrency Patterns
+Generator
 
-```yaml
+Generates synthetic market data in test mode
+
+Fan-Out
+
+Distributes updates across multiple workers
+
+Worker Pool
+
+Dedicated worker pools (5 workers per exchange)
+
+Fan-In
+
+Aggregates data from all sources into a unified stream
+
+⚙️ Configuration
+The system is configured using a config.yaml file:
+
 server:
   port: 8080
 
@@ -93,13 +127,24 @@ exchanges:
   - name: "exchange1"
     host: "127.0.0.1"
     port: 40101
-  # ...
-```
+🧠 Implementation Details
+Failover
 
-## Особенности реализации
+Automatic reconnection to exchanges
 
-- **Failover**: Автоматическое переподключение к биржам
-- **Батчинг**: Группировка записей для эффективной работы с БД
-- **Fallback**: PostgreSQL продолжает работать даже при недоступности Redis
-- **Очистка данных**: Автоматическое удаление устаревших данных из кэша
-- **Graceful Shutdown**: Корректное завершение всех горутин
+Batching
+
+Batch inserts for efficient database operations
+
+Fallback Strategy
+
+PostgreSQL continues to operate even if Redis is unavailable
+
+Data Cleanup
+
+Automatic eviction of expired cache entries
+
+Graceful Shutdown
+
+Proper shutdown of all running goroutines
+
